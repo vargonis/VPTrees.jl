@@ -2,15 +2,18 @@ import Base.show
 import DataStructures
 import Random
 
+const SMALL_DATA = 1000
+
+
 struct Node{InputType, MetricReturnType}
-    index::Int
-    data::InputType
-    radius::MetricReturnType
-    min_dist::MetricReturnType
-    max_dist::MetricReturnType
-    n_data::Int
-    left_child::Union{Node{InputType, MetricReturnType}, Nothing}
-    right_child::Union{Node{InputType, MetricReturnType}, Nothing}
+    index :: Int
+    data :: InputType
+    radius :: MetricReturnType
+    min_dist :: MetricReturnType
+    max_dist :: MetricReturnType
+    n_data :: Int
+    left_child :: Union{Node{InputType, MetricReturnType}, Nothing}
+    right_child :: Union{Node{InputType, MetricReturnType}, Nothing}
 end
 
 function Base.show(io::IO, n::Node)
@@ -18,11 +21,9 @@ function Base.show(io::IO, n::Node)
 end
 
 """
-    VPTree(data::Vector{InputType}, metric; threaded=nothing)
+    VPTree(data::Vector{InputType}, metric)
 
 Construct Vantage Point Tree with a vector of `data` and given a callable `metric`.
-`threaded` uses threading is only avaible in Julia 1.3+ to parallelize construction of the Tree.
-When not explicitly set, is set to true when the necessary conditions are met.
 
 ## Example:
 
@@ -50,75 +51,13 @@ struct VPTree{InputType, MetricReturnType}
     data::Vector{InputType}
     metric
     root::Node{InputType, MetricReturnType}
-    threaded::Bool
-    function VPTree(data::Vector{InputType}, metric; threaded=nothing) where InputType
-        threaded = _check_threaded(threaded)
+    function VPTree(data::Vector{InputType}, metric) where InputType
         @assert length(data) > 0 "Input data must contain at least one point."
         @assert !isempty(methods(metric)) "`metric` must be callable, was: $(metric)"
         MetricReturnType = typeof(metric(data[1], data[1]))
         indexed_data = Random.shuffle!(collect(enumerate(data)))
-        root = threaded ? _construct_tree_rec_threaded!(indexed_data, metric, MetricReturnType) : _construct_tree_rec!(indexed_data, metric, MetricReturnType)
-        new{InputType, MetricReturnType}(data, metric, root, threaded)
-    end
-end
-
-function _check_threaded(threaded)
-    if !isnothing(threaded) && threaded == true
-        if VERSION < v"1.3-DEV"
-            @warn "incompatible julia version for `threaded=true`: $VERSION, requires >= v\"1.3\", setting `threaded=false`"
-            threaded = false
-        elseif Threads.nthreads() == 1
-            @warn "`threaded = true`, but `Threads.nthreads() == 1`, setting `threaded=false`"
-            threaded = false
-        end
-    end
-    if isnothing(threaded)
-        threaded = VERSION >= v"1.3-DEV" && Threads.nthreads() > 1
-    end
-    threaded
-end
-
-function VPTree(data::Vector{T}, metric::Function, MetricReturnType) where T
-    VPTree(data, metric)
-end
-
-const SMALL_DATA = 1000
-
-@deprecate VPTree(data::Vector, metric::Function, MetricReturnType::DataType) VPTree(data::Vector, metric)
-
-function _construct_tree_rec_threaded!(data::AbstractVector{Tuple{Int, InputType}}, metric, MetricReturnType) where InputType
-    if isempty(data)
-        return nothing
-    end
-    n_data = length(data)
-    if n_data == 1
-        return Node(data[1][1], data[1][2], zero(MetricReturnType), zero(MetricReturnType), zero(MetricReturnType), n_data, nothing, nothing)
-    end
-    vantage_point = data[1]
-    rest = view(data, 2:length(data))
-    distances = [metric(d[2], vantage_point[2]) for d in rest]
-    i_middle = div(n_data - 1, 2) + 1
-    distance_order = sortperm(distances, alg=PartialQuickSort(i_middle))
-    permute!(rest, distance_order)
-
-    min_dist, max_dist = extrema(distances)
-    radius = distances[distance_order[i_middle]]
-    left_rest = view(rest, 1:i_middle)
-
-    should_spawn = length(rest) > SMALL_DATA
-    left_node = if should_spawn
-        Threads.@spawn _construct_tree_rec_threaded!(left_rest, metric, MetricReturnType)
-    else
-        _construct_tree_rec!(left_rest, metric, MetricReturnType)
-    end
-
-    right_rest = view(rest, i_middle + 1:length(rest))
-    right_node = _construct_tree_rec_threaded!(right_rest, metric, MetricReturnType)
-
-    if should_spawn
-        Node{InputType, MetricReturnType}(vantage_point[1], vantage_point[2], radius,  min_dist, max_dist, n_data, fetch(left_node), right_node)
-    else
-        Node{InputType, MetricReturnType}(vantage_point[1], vantage_point[2], radius,  min_dist, max_dist, n_data, left_node, right_node)
+        root = _construct_tree_rec!(indexed_data, metric, MetricReturnType)
+        new{InputType, MetricReturnType}(data, metric, root)
     end
 end
 
@@ -128,25 +67,40 @@ function _construct_tree_rec!(data::AbstractVector{Tuple{Int, InputType}}, metri
     end
     n_data = length(data)
     if n_data == 1
-        return Node(data[1][1], data[1][2], zero(MetricReturnType), zero(MetricReturnType), zero(MetricReturnType), n_data, nothing, nothing)
+        return Node{InputType, MetricReturnType}(data[1][1], data[1][2], zero(MetricReturnType), zero(MetricReturnType), zero(MetricReturnType), n_data, nothing, nothing)
     end
     vantage_point = data[1]
-    rest = view(data, 2:length(data))
-    distances = [metric(d[2], vantage_point[2]) for d in rest]
+    rest = view(data, 2:n_data)
+    distances = Vector{Float64}(undef, n_data-1)
+    @inbounds Threads.@threads for i in 1:n_data-1
+    # for i in 1:n_data-1
+        distances[i] = metric(rest[i][2], vantage_point[2])
+    end
     i_middle = div(n_data - 1, 2) + 1
     distance_order = sortperm(distances, alg=PartialQuickSort(i_middle))
     permute!(rest, distance_order)
 
     left_rest = view(rest, 1:i_middle)
-
     left_node = _construct_tree_rec!(left_rest, metric, MetricReturnType)
+    # should_spawn = length(rest) > SMALL_DATA
+    # left_node = if should_spawn
+    #     Threads.@spawn _construct_tree_rec!(left_rest, metric, MetricReturnType)
+    # else
+    #     _construct_tree_rec!(left_rest, metric, MetricReturnType)
+    # end
 
     right_rest = view(rest, i_middle + 1:length(rest))
     right_node = _construct_tree_rec!(right_rest, metric, MetricReturnType)
 
-    min_dist, max_dist = extrema(distances)
+    # min_dist, max_dist = extrema(distances)
+    min_dist, max_dist = distances[distance_order[1]], distances[distance_order[end]]
     radius = distances[distance_order[i_middle]]
 
+    # if should_spawn
+    #     Node{InputType, MetricReturnType}(vantage_point[1], vantage_point[2], radius,  min_dist, max_dist, n_data, fetch(left_node), right_node)
+    # else
+    #     Node{InputType, MetricReturnType}(vantage_point[1], vantage_point[2], radius,  min_dist, max_dist, n_data, left_node, right_node)
+    # end
     Node{InputType, MetricReturnType}(vantage_point[1], vantage_point[2], radius,  min_dist, max_dist, n_data, left_node, right_node)
 end
 
@@ -175,31 +129,12 @@ data[find(vptree, query, radius)]
 ```
 """
 function find(vptree::VPTree{InputType, MetricReturnType}, query::InputType, radius::MetricReturnType, skip=nothing)::Vector{Int} where {InputType, MetricReturnType}
-    if vptree.threaded
-        results_threads = [Vector{Int}() for i in 1:Threads.nthreads()]
-        _find_threaded(vptree.root, query, radius, results_threads, vptree.metric, skip)
-        return reduce(vcat, results_threads)
-    else
-        results = Vector{Int}()
-        _find(vptree.root, query, radius, results, vptree.metric, skip)
-        return results
-    end
+    results_threads = [Vector{Int}() for i in 1:Threads.nthreads()]
+    _find(vptree.root, query, radius, results_threads, vptree.metric, skip)
+    reduce(vcat, results_threads)
 end
 
 function _find(vantage_point, query, radius, results, metric, skip)
-    distance = metric(vantage_point.data, query)
-    if distance <= radius && (isnothing(skip) || !skip(vantage_point.index))
-        push!(results, vantage_point.index)
-    end
-    if distance - radius <= vantage_point.radius && !isnothing(vantage_point.left_child) && distance + radius >= vantage_point.min_dist
-        _find(vantage_point.left_child, query, radius, results, metric, skip)
-    end
-    if distance + radius >= vantage_point.radius && !isnothing(vantage_point.right_child) && distance - radius <= vantage_point.max_dist
-        _find(vantage_point.right_child, query, radius, results, metric, skip)
-    end
-end
-
-function _find_threaded(vantage_point, query, radius, results, metric, skip)
     distance = metric(vantage_point.data, query)
     if distance <= radius && (isnothing(skip) || !skip(vantage_point.index))
         push!(results[Threads.threadid()], vantage_point.index)
@@ -207,13 +142,13 @@ function _find_threaded(vantage_point, query, radius, results, metric, skip)
     goleft = distance + radius >= vantage_point.radius && !isnothing(vantage_point.right_child) && distance - radius <= vantage_point.max_dist
     if distance - radius <= vantage_point.radius && !isnothing(vantage_point.left_child) && distance + radius >= vantage_point.min_dist
         if goleft && vantage_point.n_data > SMALL_DATA
-            r = Threads.@spawn _find_threaded(vantage_point.left_child, query, radius, results, metric, skip)
+            r = Threads.@spawn _find(vantage_point.left_child, query, radius, results, metric, skip)
         else
-            _find_threaded(vantage_point.left_child, query, radius, results, metric, skip)
+            _find(vantage_point.left_child, query, radius, results, metric, skip)
         end
     end
     if goleft
-        _find_threaded(vantage_point.right_child, query, radius, results, metric, skip)
+        _find(vantage_point.right_child, query, radius, results, metric, skip)
     end
     if @isdefined r
         wait(r)
