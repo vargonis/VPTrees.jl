@@ -51,17 +51,20 @@ struct VPTree{InputType, MetricReturnType}
     data::Vector{InputType}
     metric
     root::Node{InputType, MetricReturnType}
-    function VPTree(data::Vector{InputType}, metric) where InputType
-        @assert length(data) > 0 "Input data must contain at least one point."
-        @assert !isempty(methods(metric)) "`metric` must be callable, was: $(metric)"
-        MetricReturnType = typeof(metric(data[1], data[1]))
-        indexed_data = Random.shuffle!(collect(enumerate(data)))
-        root = _construct_tree_rec!(indexed_data, metric, MetricReturnType)
-        new{InputType, MetricReturnType}(data, metric, root)
-    end
 end
 
+function VPTree(data::Vector{InputType}, metric) where InputType
+    @assert length(data) > 0 "Input data must contain at least one point."
+    @assert !isempty(methods(metric)) "`metric` must be callable, was: $(metric)"
+    MetricReturnType = typeof(metric(data[1], data[1]))
+    indexed_data = Random.shuffle!(collect(enumerate(data)))
+    root = _construct_tree_rec!(indexed_data, metric, MetricReturnType)
+    VPTree(data, metric, root)
+end
+
+
 function _construct_tree_rec!(data::AbstractVector{Tuple{Int, InputType}}, metric, MetricReturnType) where InputType
+    # InputSubType <: InputType || throw(ArgumentError("Incompatible data type"))
     if isempty(data)
         return nothing
     end
@@ -180,7 +183,11 @@ data[find_nearest(vptree, query, n_neighbors)]
 #  "bla"
 ```
 """
-function find_nearest(vptree::VPTree{InputType, MetricReturnType}, query::InputType, n_neighbors::Int, skip=nothing)::Vector{Int} where {InputType, MetricReturnType}
+function find_nearest(
+        vptree :: VPTree{InputType, MetricReturnType},
+        query :: InputType,
+        n_neighbors :: Int,
+        skip = nothing) :: Vector{Int} where {InputType, MetricReturnType}
     @assert n_neighbors > 0 "Can't search for fewer than 1 neighbors"
     candidates = DataStructures.BinaryMaxHeap{Tuple{MetricReturnType, Int}}()
     _find_nearest(vptree.root, query, n_neighbors, candidates, vptree.metric, skip)
@@ -189,7 +196,9 @@ end
 
 function _find_nearest(vantage_point, query, n_neighbors, candidates, metric, skip)
     distance = metric(vantage_point.data, query)
-    radius = length(candidates) < n_neighbors ? typemax(typeof(vantage_point.radius)) : first(candidates)[1]
+    radius = length(candidates) < n_neighbors ?
+                typemax(typeof(vantage_point.radius)) :
+                first(candidates)[1]
     if distance < radius && (isnothing(skip) || !skip(vantage_point.index))
         push!(candidates, (distance, vantage_point.index))
         if length(candidates) > n_neighbors
